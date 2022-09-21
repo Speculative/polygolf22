@@ -92,9 +92,9 @@ green_poly = ShapelyPolygon(map["map"])
 sand_polys = [ShapelyPolygon(coords) for coords in map["sand traps"]]
 plt.fill(*list(zip(*map["map"])), facecolor="#bbff66", edgecolor="black", linewidth=1)
 start_x, start_y = map["start"]
-plt.plot(start_x, start_y, "bo")
+plt.plot(start_x, start_y, "b.")
 target_x, target_y = map["target"]
-plt.plot(target_x, target_y, "ro")
+plt.plot(target_x, target_y, "r.")
 
 if "sand traps" in map:
     for trap in map["sand traps"]:
@@ -141,13 +141,35 @@ is_sand = [
     for row in cell_polys
 ]
 
-X, Y = np.meshgrid(x_bins, y_bins)
-plt.pcolormesh(
-    X,
-    Y,
-    is_sand,
-    alpha=0.5,
-)
+# X, Y = np.meshgrid(x_bins, y_bins)
+# plt.pcolormesh(
+#     X,
+#     Y,
+#     is_sand,
+#     alpha=0.5,
+# )
 
+start_x, start_y = map["start"]
+H = sample_shots(x_bins, y_bins, start_x, start_y, 10, 210, np.pi / 2)
+
+transition = H.T
+
+print(start_x, min_x)
+print(start_y, min_y)
+start_xi = int((start_x - min_x) / (x_tick))
+start_yi = int((start_y - min_y) / (y_tick))
+print(start_xi, start_yi)
+
+for xi in range(x_quant + 1):
+    for yi in range(y_quant + 1):
+        if not is_land[yi][xi]:
+            transition[start_yi][start_xi] += transition[yi][xi]
+            transition[yi][xi] = 0
+
+# normalize transition probabilities
+transition = transition / np.sum(transition)
+
+X, Y = np.meshgrid(x_bins, y_bins)
+plt.pcolormesh(X, Y, transition, alpha=0.8)
 
 plt.savefig("map.png")
