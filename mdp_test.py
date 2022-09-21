@@ -89,6 +89,7 @@ for y in y_bins:
 print(x_bins[0], x_bins[-1], y_bins[0], y_bins[-1])
 
 green_poly = ShapelyPolygon(map["map"])
+sand_polys = [ShapelyPolygon(coords) for coords in map["sand traps"]]
 plt.fill(*list(zip(*map["map"])), facecolor="#bbff66", edgecolor="black", linewidth=1)
 start_x, start_y = map["start"]
 plt.plot(start_x, start_y, "bo")
@@ -115,29 +116,36 @@ if "sand traps" in map:
 # visualize land
 # ==============
 #
-is_land = [
+cell_polys = [
     [
-        green_poly.contains(
-            ShapelyPolygon(
-                [
-                    (min_x + xi * x_tick, min_y + yi * y_tick),
-                    (min_x + (xi + 1) * x_tick, min_y + yi * y_tick),
-                    (min_x + (xi + 1) * x_tick, min_y + (yi + 1) * y_tick),
-                    (min_x + xi * x_tick, min_y + (yi + 1) * y_tick),
-                    (min_x + xi * x_tick, min_y + yi * y_tick),
-                ]
-            )
+        ShapelyPolygon(
+            [
+                (min_x + xi * x_tick, min_y + yi * y_tick),
+                (min_x + (xi + 1) * x_tick, min_y + yi * y_tick),
+                (min_x + (xi + 1) * x_tick, min_y + (yi + 1) * y_tick),
+                (min_x + xi * x_tick, min_y + (yi + 1) * y_tick),
+                (min_x + xi * x_tick, min_y + yi * y_tick),
+            ]
         )
         for xi in range(x_quant + 2)
     ]
     for yi in range(y_quant + 2)
 ]
 
+is_land = [[green_poly.contains(cell_poly) for cell_poly in row] for row in cell_polys]
+is_sand = [
+    [
+        any(cell_poly.intersects(sand_poly) for sand_poly in sand_polys)
+        for cell_poly in row
+    ]
+    for row in cell_polys
+]
+
 X, Y = np.meshgrid(x_bins, y_bins)
 plt.pcolormesh(
     X,
     Y,
-    is_land,
+    is_sand,
     alpha=0.5,
 )
 
