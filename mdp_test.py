@@ -13,17 +13,18 @@ def to_cartesian(r, theta):
 
 
 # distance/angle space -> x/y space?
-def sample_shots(x_bins, y_bins, start_x, start_y, skill, distance, angle):
-    print(f"sampling x={start_x}, y={start_y}, d={distance}, theta={angle}")
+def sample_shots(
+    x_bins, y_bins, start_x, start_y, skill, distance, angle, num_samples=10_000
+):
     distance_dev = distance / skill
     angle_dev = 1 / (2 * skill)
     dist = multivariate_normal(
         mean=[distance, angle], cov=[distance_dev**2, angle_dev**2]
     )
-    samples = dist.rvs(size=10_000)
-    ds1 = [t[0] for t in samples]
-    angles1 = [t[1] for t in samples]
-    xs, ys = to_cartesian(ds1, angles1)
+    samples = dist.rvs(size=num_samples)
+    ds = [t[0] for t in samples]
+    angles = [t[1] for t in samples]
+    xs, ys = to_cartesian(ds, angles)
     xs += start_x
     ys += start_y
 
@@ -47,18 +48,13 @@ map_file = "maps/g5/zigzag_g5.json"
 with open(map_file) as f:
     map = json.loads(f.read())
 
-xs = [x for x, _ in map["map"]]
-ys = [y for _, y in map["map"]]
+map_xs = [x for x, _ in map["map"]]
+map_ys = [y for _, y in map["map"]]
 
-min_x = min(xs)
-max_x = max(xs)
-min_y = min(ys)
-max_y = max(ys)
-
-width = max(xs) - min(xs)
-height = max(ys) - min(ys)
-
-plt.gca().set_aspect(width / height)
+map_min_x = min(map_xs)
+map_max_x = max(map_xs)
+map_min_y = min(map_ys)
+map_max_y = max(map_ys)
 
 x_quant = 50
 y_quant = 50
@@ -66,14 +62,28 @@ y_quant = 50
 dist_quant = 10
 angle_quant = 8
 
-x_tick = (max_x - min_x) / x_quant
-y_tick = (max_y - min_y) / y_quant
+x_tick = (map_max_x - map_min_x) / x_quant
+y_tick = (map_max_y - map_min_y) / y_quant
 
-x_bins = np.linspace(min_x - x_tick, max_x + x_tick, x_quant + 2)
-print(len(x_bins))
+min_x = map_min_x - x_tick
+max_x = map_max_x + x_tick
+min_y = map_min_y - y_tick
+max_y = map_max_y + y_tick
+
+width = max_x - min_x
+height = max_y - min_y
+
+plt.gca().set_aspect(width / height)
+
+
+x_bins = np.linspace(map_min_x - x_tick, map_max_x + x_tick, x_quant + 2)
+y_bins = np.linspace(map_min_y - y_tick, map_max_y + y_tick, y_quant + 2)
+
+# Visualize bins
+# ==============
+#
 for x in x_bins:
     plt.axvline(x=x, color="black", alpha=0.1)
-y_bins = np.linspace(min_y - y_tick, max_y + y_tick, y_quant + 2)
 for y in y_bins:
     plt.axhline(y=y, color="black", alpha=0.1)
 print(x_bins[0], x_bins[-1], y_bins[0], y_bins[-1])
@@ -94,10 +104,42 @@ if "sand traps" in map:
             linewidth=1,
         )
 
-start_x, start_y = map["start"]
-H = sample_shots(x_bins, y_bins, start_x, start_y, 10, 400, np.pi / 2)
+# visualize shot
+# ==============
+#
+# start_x, start_y = map["start"]
+# H = sample_shots(x_bins, y_bins, start_x, start_y, 10, 210, 2 * np.pi)
+# X, Y = np.meshgrid(x_bins, y_bins)
+# plt.pcolormesh(X, Y, H.T, alpha=0.8)
+
+# visualize land
+# ==============
+#
+is_land = [
+    [
+        green_poly.contains(
+            ShapelyPolygon(
+                [
+                    (min_x + xi * x_tick, min_y + yi * y_tick),
+                    (min_x + (xi + 1) * x_tick, min_y + yi * y_tick),
+                    (min_x + (xi + 1) * x_tick, min_y + (yi + 1) * y_tick),
+                    (min_x + xi * x_tick, min_y + (yi + 1) * y_tick),
+                    (min_x + xi * x_tick, min_y + yi * y_tick),
+                ]
+            )
+        )
+        for xi in range(x_quant + 2)
+    ]
+    for yi in range(y_quant + 2)
+]
+
 X, Y = np.meshgrid(x_bins, y_bins)
-plt.pcolormesh(X, Y, H.T, alpha=0.8)
+plt.pcolormesh(
+    X,
+    Y,
+    is_land,
+    alpha=0.5,
+)
 
 
 plt.savefig("map.png")
