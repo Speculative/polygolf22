@@ -28,7 +28,7 @@ def sample_shots(
     distance,
     angle,
     in_sand,
-    num_samples=1_000,
+    num_samples=100,
 ):
     distance_dev = distance / skill
     angle_dev = 1 / (2 * skill)
@@ -276,7 +276,7 @@ test_xi, test_yi = to_bin(test_x, test_y)
 # X, Y = np.meshgrid(x_bins, y_bins)
 # plt.pcolormesh(X, Y, transition, alpha=0.8)
 
-plt.savefig("map.png")
+# plt.savefig("map.png")
 
 
 S = list(product(x_bins, y_bins))
@@ -342,5 +342,12 @@ mdp.run()
 print("Converged in", mdp.time)
 print(mdp.V)
 print(mdp.policy)
+
+v_hist = np.transpose(np.split(np.array(mdp.V), y_quant + 2))
+X, Y = np.meshgrid(x_bins, y_bins)
+plt.pcolormesh(X, Y, v_hist, alpha=0.8)
+
+plt.savefig("map.png")
+
 
 # Visualize values
