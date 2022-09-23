@@ -7,10 +7,12 @@ from shapely.geometry import (
     Point as ShapelyPoint,
 )
 from itertools import product
+from time import perf_counter
 
 from timeit import timeit
 import pickle
 from os.path import exists
+from os import makedirs
 import mdptoolbox
 import multiprocessing
 
@@ -64,11 +66,9 @@ def sample_shots(
     return H
 
 
-plt.savefig("render.png")
-
 plt.clf()
 plt.gca().invert_yaxis()
-map_file = "maps/default/simple_with_sandtraps.json"
+map_file = "maps/g5/yiwei_wu_map.json"
 with open(map_file) as f:
     map = json.loads(f.read())
 
@@ -82,8 +82,8 @@ map_max_y = max(map_ys)
 
 print(f"Map boundaries: x {map_min_x}, {map_max_x} y {map_min_y} {map_max_y}")
 
-x_quant = 25
-y_quant = 25
+x_quant = 30
+y_quant = 30
 # Distance rating: 200 + s
 dist_quant = 20
 angle_quant = 36
@@ -108,6 +108,8 @@ x_bins = np.linspace(min_x, max_x, x_quant + 2, endpoint=False)
 y_bins = np.linspace(min_y, max_y, y_quant + 2, endpoint=False)
 # x_bins = np.arange(min_x, max_x, x_tick)
 # y_bins = np.arange(min_y, max_y, y_tick)
+total_x_bins = len(x_bins)
+total_y_bins = len(y_bins)
 
 # Profiling how long generating T takes
 # =====================================
@@ -178,9 +180,9 @@ cell_polys = [
                 (min_x + xi * x_tick, min_y + yi * y_tick),
             ]
         )
-        for xi in range(x_quant + 2)
+        for xi in range(total_x_bins)
     ]
-    for yi in range(y_quant + 2)
+    for yi in range(total_y_bins)
 ]
 
 is_land = [[green_poly.contains(cell_poly) for cell_poly in row] for row in cell_polys]
@@ -247,8 +249,8 @@ def transition_histogram(start_x, start_y, skill, distance, angle, is_sand):
 
     # print("start:", start_x, start_y, start_xi, start_yi)
     return_shots = 0
-    for xi in range(x_quant + 2):
-        for yi in range(y_quant + 2):
+    for xi in range(total_x_bins):
+        for yi in range(total_y_bins):
             if np.isnan(transition[yi][xi]):
                 transition[yi][xi] = 0
             if not is_land[yi][xi]:
@@ -273,21 +275,16 @@ skill = 100
 distance_levels = np.linspace(1, 200 + skill, dist_quant)
 angle_levels = np.linspace(0, 2 * np.pi, angle_quant)
 
-unreachable_transition = np.array(
-    [0 for _ in range(x_quant + 2) for _ in range(y_quant + 2)]
-)
-unreachable_transition[0] = 1
-
-# visualize shot
-# ==============
+# visualize test shot
+# ===================
 #
 # start_x, start_y = map["start"]
-test_x = 26.4
-test_y = 208.6
-test_dist = 1.0
-test_angle = 0.0
+# test_x = 26.4
+# test_y = 208.6
+# test_dist = 1.0
+# test_angle = 0.0
 
-test_xi, test_yi = to_bin(test_x, test_y)
+# test_xi, test_yi = to_bin(test_x, test_y)
 
 # H = sample_shots(
 #     x_bins,
@@ -313,32 +310,54 @@ test_xi, test_yi = to_bin(test_x, test_y)
 
 # plt.savefig("map.png")
 
-S = list(product(x_bins, y_bins))
+S = list(product(y_bins, x_bins))
 A = list(product(distance_levels, angle_levels))
 print("states:", len(S))
 print("actions", len(distance_levels) * len(angle_levels))
 
+
+def point_is_land(x, y):
+    xi, yi = to_bin(x, y)
+    return is_land[yi][xi]
+
+
+def point_is_sand(x, y):
+    xi, yi = to_bin(x, y)
+    return is_sand[yi][xi]
+
+
+unreachable_transition = np.array(
+    [0 for _ in range(total_x_bins) for _ in range(total_y_bins)]
+)
+unreachable_transition[0] = 1
+
+
+def transition_for_action_at_state(action, state):
+    distance, angle = action
+    y, x = state
+    if not point_is_land(x, y):
+        # print("Point is not on land")
+        return unreachable_transition
+
+    cx = x + 0.5 * x_tick
+    cy = y + 0.5 * y_tick
+
+    sand = point_is_sand(cx, cy)
+    if not sand or distance <= (200 + skill) / 2:
+        return transition_histogram(cx, cy, skill, distance, angle, sand).flatten()
+    else:
+        # print("In sand and distance is too long")
+        # In sand, max distance is halved, so treat these actions as invalid
+        return unreachable_transition
+
+
+def gen_action_transitions(action):
+    return [transition_for_action_at_state(action, state) for state in S]
+
+
 # Profiling how long generating T takes
 # =====================================
 #
-def gen_action_transitions(args):
-    distance, angle = args
-
-    return [
-        transition_histogram(
-            x + 0.5 * x_tick,
-            y + 0.5 * y_tick,
-            skill,
-            distance,
-            angle,
-            is_sand[int((y - min_y) / y_tick)][int((x - min_x) / x_tick)],
-        ).flatten()
-        if is_land[to_bin(x, y)[1]][to_bin(x, y)[0]]
-        else unreachable_transition
-        for x, y in S
-    ]
-
-
 # print(
 #     "Time to generate all histograms for 1 action:",
 #     timeit(gen_action_transitions, number=1),
@@ -349,13 +368,14 @@ if exists("T.pkl"):
     with open("T.pkl", "rb") as f:
         T = pickle.load(f)
 else:
+    # T = np.array(gen_action_transitions(distance, angle) for distance, angle in A)
+    t_start = perf_counter()
     pool = multiprocessing.Pool(multiprocessing.cpu_count())
     T = np.array(pool.map(gen_action_transitions, A))
+    t_end = perf_counter()
+    print("T generated in", t_end - t_start, "seconds")
     with open("T.pkl", "wb") as f:
         pickle.dump(T, f)
-
-print(len(T), "actions")
-print(len(T[0]), "states")
 
 # Flatten
 # T = np.array(
@@ -365,12 +385,15 @@ print(len(T[0]), "states")
 #     ]
 # )
 
-R = np.array([-1 for _ in range(x_quant + 2) for _ in range(y_quant + 2)])
+R = np.array([-1 for _ in range(total_x_bins) for _ in range(total_y_bins)])
 target_x, target_y = to_bin(*map["target"])
-R[target_y * (x_quant + 2) + target_x] = 10
+R[target_y * (total_x_bins) + target_x] = 1
+
+plt.plot(x_bins[target_x], y_bins[target_y], "c.")
 
 print("Training model...")
 mdp = mdptoolbox.mdp.PolicyIteration(T, R, 0.99)
+mdp.setVerbose()
 mdp.run()
 print("Converged in", mdp.time)
 
@@ -380,24 +403,22 @@ print("Converged in", mdp.time)
 draw_map()
 draw_bins()
 
-v_hist = np.transpose(np.split(np.array(mdp.V), y_quant + 2))
+v_hist = np.split(np.array(mdp.V), total_y_bins)
 X, Y = np.meshgrid(x_bins, y_bins)
-plt.pcolormesh(X, Y, v_hist, alpha=0.8)
+plt.pcolormesh(X, Y, v_hist, alpha=0.8, vmin=90, vmax=100)
 
-plt.savefig("value.png")
+plt.savefig("value.png", dpi=400)
 
 plt.clf()
 plt.gca().invert_yaxis()
 draw_map()
 draw_bins()
 # Visualize policy
-policy_hist = np.split(np.array(mdp.policy), y_quant + 2)
-for yi in range(y_quant + 2):
-    for xi in range(x_quant + 2):
+policy_hist = np.split(np.array(mdp.policy), total_y_bins)
+for yi in range(total_y_bins):
+    for xi in range(total_x_bins):
         policy = policy_hist[yi][xi]
         if is_land[yi][xi]:
-            if policy == 0:
-                print(xi, yi, "policy is 0")
             distance, angle = A[policy_hist[yi][xi]]
             dx, dy = to_cartesian(distance, angle)
             start_x = x_bins[xi] + 0.5 * x_tick
@@ -413,4 +434,70 @@ for yi in range(y_quant + 2):
                 head_length=8,
                 length_includes_head=True,
             )
-plt.savefig("policy.png")
+plt.savefig("policy.png", dpi=400)
+
+# Visualize all shots
+# ===================
+#
+# Convert into an animation with
+# convert -delay 0 -loop 0 shots/*.png -quality 95 shots.mp4
+#
+# makedirs("shots", exist_ok=True)
+# test_xi = 5
+# test_yi = 13
+
+# for ai, action in enumerate(A):
+#     print("Rendering", ai + 1, "out of", len(A))
+#     plt.clf()
+
+#     plt.gca().set_xlim([-10, 800])
+#     plt.gca().set_ylim([0, 600])
+#     plt.gca().invert_yaxis()
+
+#     draw_map()
+#     draw_bins()
+
+#     state_bin = test_yi * (total_x_bins) + test_xi
+#     transitions = np.split(T[ai][state_bin], total_y_bins)
+#     X, Y = np.meshgrid(x_bins, y_bins)
+#     plt.pcolormesh(X, Y, transitions, alpha=0.8)
+
+#     start_x = x_bins[test_xi] + 0.5 * x_tick
+#     start_y = y_bins[test_yi] + 0.5 * y_tick
+
+#     # Plot policy vector
+#     policy = policy_hist[test_yi][test_xi]
+#     distance, angle = A[policy_hist[test_yi][test_xi]]
+#     dx, dy = to_cartesian(distance, angle)
+#     plt.arrow(
+#         start_x,
+#         start_y,
+#         dx,
+#         dy,
+#         color="green",
+#         alpha=0.5,
+#         linewidth=1,
+#         head_width=8,
+#         head_length=8,
+#         length_includes_head=True,
+#     )
+
+#     # Plot this action
+#     distance, angle = action
+#     dx, dy = to_cartesian(distance, angle)
+#     plt.arrow(
+#         start_x,
+#         start_y,
+#         dx,
+#         dy,
+#         color="black",
+#         alpha=0.5,
+#         linewidth=1,
+#         head_width=8,
+#         head_length=8,
+#         length_includes_head=True,
+#     )
+
+#     plt.title(f"Distance: {distance}, Angle: {angle}")
+
+#     plt.savefig(f"shots/{ai}.png")
