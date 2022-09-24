@@ -210,8 +210,8 @@ def to_bin(x, y):
     return xi, yi
 
 def joint_density(location, start, angle, distance, skill, in_sand):
-    rot = np.array([[np.cos(angle), -np.sin(angle)], 
-                    [np.sin(angle), np.cos(angle)]])
+    rot = np.array([[np.cos(angle), np.sin(angle)], 
+                    [-np.sin(angle), np.cos(angle)]])
     rotated_location = np.matmul(rot, location[:,:,:,np.newaxis])
     rotated_location = rotated_location.squeeze(-1)
     translated_location = rotated_location - start
@@ -223,8 +223,8 @@ def joint_density(location, start, angle, distance, skill, in_sand):
         angle_std *= 2
         dist_std *= 2
     
-    rho = np.linalg.norm(rotated_location, axis=2)
-    phi = np.arctan2(rotated_location[:,:,1], rotated_location[:,:,0])
+    rho = np.linalg.norm(translated_location, axis=2)
+    phi = np.arctan2(translated_location[:,:,1], translated_location[:,:,0])
     
     jacobian = distance
     return norm.pdf(rho, loc=distance, scale=dist_std) * norm.pdf(phi, loc=0, scale=angle_std) / jacobian
