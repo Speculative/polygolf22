@@ -8,7 +8,7 @@ from shapely.geometry import (
 )
 from itertools import product
 from time import perf_counter
-
+from scipy.integrate import dblquad
 from timeit import timeit
 import pickle
 from os.path import exists
@@ -209,6 +209,35 @@ def to_bin(x, y):
     yi = int((y - min_y) / (y_tick))
     return xi, yi
 
+def joint_density(location, start, angle, distance, skill, in_sand):
+    rot = np.array([[np.cos(angle), -np.sin(angle)], 
+                    [np.sin(angle), np.cos(angle)]])
+    rotated_location = np.matmul(rot, location[:,:,:,np.newaxis])
+    rotated_location = rotated_location.squeeze(-1)
+    translated_location = rotated_location - start
+
+    angle_std = 1 / (2 * skill)
+    dist_std = distance / skill
+
+    if in_sand:
+        angle_std *= 2
+        dist_std *= 2
+    
+    rho = np.linalg.norm(rotated_location, axis=2)
+    phi = np.arctan2(rotated_location[:,:,1], rotated_location[:,:,0])
+    
+    jacobian = distance
+    return norm.pdf(rho, loc=distance, scale=dist_std) * norm.pdf(phi, loc=0, scale=angle_std) / jacobian
+
+def transition_histogram_no_sample(start_x, start_y, skill, distance, angle, is_sand):
+    transition = np.zeros((total_y_bins, total_x_bins))
+    start = np.array([start_x, start_y])
+    for xi in range(total_x_bins):
+        for yi in range(total_y_bins):
+            transition[yi, xi] = dblquad(lambda x, y: joint_density(np.array([[[x, y]]]), start, angle, distance, skill, is_sand), 
+                                         y_bins[yi], y_bins[yi] + y_tick, 
+                                         lambda _: x_bins[xi], lambda _: x_bins[xi] + x_tick)[0]
+    return transition
 
 def transition_histogram(start_x, start_y, skill, distance, angle, is_sand):
     H = sample_shots(x_bins, y_bins, start_x, start_y, skill, distance, angle, is_sand)
