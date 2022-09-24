@@ -68,7 +68,7 @@ def sample_shots(
 
 plt.clf()
 plt.gca().invert_yaxis()
-map_file = "maps/g5/yiwei_wu_map.json"
+map_file = "maps/default/simple_with_sandtraps.json"
 with open(map_file) as f:
     map = json.loads(f.read())
 
@@ -82,8 +82,8 @@ map_max_y = max(map_ys)
 
 print(f"Map boundaries: x {map_min_x}, {map_max_x} y {map_min_y} {map_max_y}")
 
-x_quant = 30
-y_quant = 30
+x_quant = 25
+y_quant = 25
 # Distance rating: 200 + s
 dist_quant = 20
 angle_quant = 36
@@ -106,8 +106,6 @@ plt.gca().set_aspect(width / height)
 
 x_bins = np.linspace(min_x, max_x, x_quant + 2, endpoint=False)
 y_bins = np.linspace(min_y, max_y, y_quant + 2, endpoint=False)
-# x_bins = np.arange(min_x, max_x, x_tick)
-# y_bins = np.arange(min_y, max_y, y_tick)
 total_x_bins = len(x_bins)
 total_y_bins = len(y_bins)
 
@@ -205,35 +203,6 @@ is_sand = [
 #     alpha=0.5,
 # )
 
-# debugging bin sizes
-# print(len(x_bins), min_x, x_tick)
-# plt.clf()
-# plt.plot(x_bins, "b.")
-# plt.plot(np.linspace(min_x, max_x, x_quant + 2) + 50, "r.")
-# plt.savefig("map.png")
-# for i in range(len(x_bins) - 1):
-#     x = x_bins[i] + (0.5 * x_tick)
-#     xi = int((x - min_x) / (x_tick))
-#     print(
-#         i,
-#         "\t",
-#         np.round(x_bins[i]),
-#         "\t",
-#         np.round(x),
-#         "\t",
-#         xi,
-#         "\t",
-#         x - (i * x_tick),
-#         "\t",
-#         x_bins[xi + 1] - x_bins[xi],
-#     )
-
-
-# print(len(y_bins))
-# for yi in range(len(y_bins)):
-#     y = y_bins[yi] + 0.5 * y_tick
-#     print(y, int((y - min_y) / (y_tick)))
-
 
 def to_bin(x, y):
     xi = int((x - min_x) / (x_tick))
@@ -271,49 +240,16 @@ def transition_histogram(start_x, start_y, skill, distance, angle, is_sand):
     return transition
 
 
-skill = 100
+skill = 10
 distance_levels = np.linspace(1, 200 + skill, dist_quant)
 angle_levels = np.linspace(0, 2 * np.pi, angle_quant)
 
-# visualize test shot
-# ===================
-#
-# start_x, start_y = map["start"]
-# test_x = 26.4
-# test_y = 208.6
-# test_dist = 1.0
-# test_angle = 0.0
-
-# test_xi, test_yi = to_bin(test_x, test_y)
-
-# H = sample_shots(
-#     x_bins,
-#     y_bins,
-#     test_x,
-#     test_y,
-#     skill,
-#     test_dist,
-#     test_angle,
-#     is_sand[test_yi][test_xi],
-# )
-# plt.plot(test_x, test_y, "g.")
-# print(is_land[test_yi][test_xi])
-# X, Y = np.meshgrid(x_bins, y_bins)
-# print(np.sum(H))
-# plt.pcolormesh(X, Y, H.T, alpha=0.8)
-
-# start_x, start_y = map["start"]
-# transition = transition_histogram(start_x, start_y, 10, 100, 3 * np.pi / 2, False)
-
-# X, Y = np.meshgrid(x_bins, y_bins)
-# plt.pcolormesh(X, Y, transition, alpha=0.8)
-
-# plt.savefig("map.png")
-
 S = list(product(y_bins, x_bins))
 A = list(product(distance_levels, angle_levels))
-print("states:", len(S))
-print("actions", len(distance_levels) * len(angle_levels))
+num_states = len(S)
+num_actions = len(A)
+print("states:", num_states)
+print("actions:", num_actions)
 
 
 def point_is_land(x, y):
@@ -351,10 +287,6 @@ def transition_for_action_at_state(action, state):
         return unreachable_transition
 
 
-def gen_action_transitions(action):
-    return [transition_for_action_at_state(action, state) for state in S]
-
-
 # Profiling how long generating T takes
 # =====================================
 #
@@ -363,27 +295,73 @@ def gen_action_transitions(action):
 #     timeit(gen_action_transitions, number=1),
 # )
 
+# "off", "pickle", "mmap"
+T_cache = "pickle"
+pickle_cache_file = "T.pkl"
+mmap_cache_file = "T.npy"
 
-if exists("T.pkl"):
-    with open("T.pkl", "rb") as f:
-        T = pickle.load(f)
-else:
-    # T = np.array(gen_action_transitions(distance, angle) for distance, angle in A)
+
+def gen_action_transitions(action):
+    return [transition_for_action_at_state(action, state) for state in S]
+
+
+def mmap_gen_action_transitions(work):
+    index, action = work
+    T = np.memmap(
+        mmap_cache_file,
+        dtype="float",
+        mode="r+",
+        shape=(num_actions, num_states, num_states),
+    )
+    T[index] = [transition_for_action_at_state(action, state) for state in S]
+
+
+def gen_T_parallel():
     t_start = perf_counter()
     pool = multiprocessing.Pool(multiprocessing.cpu_count())
     T = np.array(pool.map(gen_action_transitions, A))
     t_end = perf_counter()
     print("T generated in", t_end - t_start, "seconds")
-    with open("T.pkl", "wb") as f:
-        pickle.dump(T, f)
+    return T
 
-# Flatten
-# T = np.array(
-#     [
-#         [[cell for row in histogram for cell in row] for histogram in action]
-#         for action in T
-#     ]
-# )
+
+if T_cache == "off":
+    print("T caching is off, generating...")
+    T = gen_T_parallel()
+elif T_cache == "pickle":
+    if exists(pickle_cache_file):
+        print(f"Found cached {pickle_cache_file}")
+        with open(pickle_cache_file, "rb") as f:
+            T = pickle.load(f)
+    else:
+        print(f"No cached {pickle_cache_file}, generating...")
+        T = gen_T_parallel()
+        with open(pickle_cache_file, "wb") as f:
+            pickle.dump(T, f)
+elif T_cache == "mmap":
+    has_cached = exists(mmap_cache_file)
+    has_cached = exists(mmap_cache_file)
+    T = np.memmap(
+        mmap_cache_file,
+        dtype="float",
+        mode="r+" if has_cached else "w+",
+        shape=(num_actions, num_states, num_states),
+    )
+    if not has_cached:
+        print(f"No cached {mmap_cache_file}, generating...")
+        t_start = perf_counter()
+        pool = multiprocessing.Pool(multiprocessing.cpu_count())
+        pool.map(mmap_gen_action_transitions, enumerate(A))
+        t_end = perf_counter()
+        print("T generated in", t_end - t_start, "seconds")
+    else:
+        print(f"Found cached {mmap_cache_file}")
+else:
+    assert T_cache in [
+        "off",
+        "pickle",
+        "mmap",
+    ], "T_cache must be one of: off, pickle, mmap"
 
 R = np.array([-1 for _ in range(total_x_bins) for _ in range(total_y_bins)])
 target_x, target_y = to_bin(*map["target"])
