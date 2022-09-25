@@ -18,10 +18,27 @@ import multiprocessing
 import pdb
 
 
-map_file = "maps/default/simple_with_sandtraps.json"
+# =====================
+# Problem Configuration
+# =====================
+#
+x_quant = 20
+y_quant = 10
+# Distance rating: 200 + s
+dist_quant = 20
+angle_quant = 36
+skill = 10
+
+# map_file = "maps/default/simple_with_sandtraps.json"
+map_file = "maps/g5/zigzag_g5.json"
+# map_file = "maps/g5/yiwei_wu_map.json"
 with open(map_file) as f:
     map = json.loads(f.read())
 
+# =============================
+# Map quantization fundamentals
+# =============================
+#
 map_xs = [x for x, _ in map["map"]]
 map_ys = [y for _, y in map["map"]]
 
@@ -31,12 +48,6 @@ map_min_y = min(map_ys)
 map_max_y = max(map_ys)
 
 print(f"Map boundaries: x {map_min_x}, {map_max_x} y {map_min_y} {map_max_y}")
-
-x_quant = 25
-y_quant = 25
-# Distance rating: 200 + s
-dist_quant = 20
-angle_quant = 36
 
 x_tick = (map_max_x - map_min_x) / x_quant
 y_tick = (map_max_y - map_min_y) / y_quant
@@ -57,10 +68,13 @@ total_x_bins = len(x_bins)
 total_y_bins = len(y_bins)
 print("bins:", total_x_bins, total_y_bins)
 
+# ==============
+# Geometry setup
+# ==============
+#
 green_poly = ShapelyPolygon(map["map"])
 sand_polys = [ShapelyPolygon(coords) for coords in map["sand traps"]]
 
-skill = 10
 distance_levels = np.linspace(1, 200 + skill, dist_quant)
 angle_levels = np.linspace(0, 2 * np.pi, angle_quant)
 
@@ -80,6 +94,10 @@ cell_polys = [
     for y_bin in y_bins
 ]
 
+# =============
+# Terrain types
+# =============
+#
 is_land = [[green_poly.contains(cell_poly) for cell_poly in row] for row in cell_polys]
 has_land = [
     [green_poly.intersects(cell_poly) for cell_poly in row] for row in cell_polys
@@ -87,13 +105,6 @@ has_land = [
 percent_land = [
     [
         min(green_poly.intersection(cell_poly).area / cell_poly.area, 1)
-        for cell_poly in row
-    ]
-    for row in cell_polys
-]
-has_sand = [
-    [
-        any(cell_poly.intersects(sand_poly) for sand_poly in sand_polys)
         for cell_poly in row
     ]
     for row in cell_polys
@@ -119,6 +130,10 @@ def to_bin_index(x, y):
     return xi, yi
 
 
+# =====================
+# MDP: States & Actions
+# =====================
+#
 landy_bins = list(
     (yi, xi)
     for yi, xi in product(range(total_y_bins), range(total_x_bins))
@@ -166,17 +181,15 @@ print("actions:", num_actions)
 # )
 
 
-# Visualize bins
-# ==============
+# =====================
+# Visualization Helpers
+# =====================
 #
 def draw_bins():
     for x in x_bins:
         plt.axvline(x=x, color="black", alpha=0.1)
     for y in y_bins:
         plt.axhline(y=y, color="black", alpha=0.1)
-
-
-print(f"x range: [{x_bins[0]}, {x_bins[-1]}], y range:[{y_bins[0]}, {y_bins[-1]}]")
 
 
 def draw_map():
@@ -211,14 +224,10 @@ def overlay_tiles(tiles, vmin=None, vmax=None):
     plt.pcolormesh(X, Y, tiles, alpha=0.5, vmin=vmin, vmax=vmax)
 
 
-# visualize land
-# ==============
+# ===========================
+# Shot transition calculation
+# ===========================
 #
-reset_figure()
-overlay_tiles(percent_land)
-plt.savefig("map.png")
-
-
 def to_cartesian(r, theta):
     return r * np.cos(theta), r * np.sin(theta)
 
@@ -309,7 +318,6 @@ def transition_histogram(start_xi, start_yi, skill, distance, angle, is_sand):
     start_x = x_bins[start_xi] + 0.5 * x_tick
     start_y = y_bins[start_yi] + 0.5 * y_tick
     H = sample_shots(x_bins, y_bins, start_x, start_y, skill, distance, angle, is_sand)
-    H = H.T
 
     transition = np.zeros(num_states)
 
@@ -357,8 +365,8 @@ def transition_histogram(start_xi, start_yi, skill, distance, angle, is_sand):
     return transition
 
 
-# TODO: This no longer refers to a water tile.
-# Need a new tile for this to point to.
+# Used for invalid actions
+# S[-1] is an "invalid" sink state: shots going there stay there forever
 unreachable_transition = np.array([0 for _ in range(num_states)])
 unreachable_transition[-1] = 1
 
@@ -386,8 +394,14 @@ def transition_for_action_at_state(action, state):
         return unreachable_transition
 
 
-# "off", "pickle", "mmap"
-T_cache = "pickle"
+# ==============================
+# Actual T calculation & storage
+# ==============================
+#
+# This can be: "off", "pickle", "mmap"
+# Use "mmap" when T is too large to fit in memory, but it will slow down all
+# calculations by a LOT (> 2x).
+T_cache = "off"
 pickle_cache_file = "T.pkl"
 mmap_cache_file = "T.npy"
 
@@ -396,6 +410,7 @@ def gen_action_transitions(action):
     return [transition_for_action_at_state(action, state) for state in S]
 
 
+# =====================================
 # Profiling how long generating T takes
 # =====================================
 #
@@ -464,21 +479,36 @@ else:
         "mmap",
     ], "T_cache must be one of: off, pickle, mmap"
 
+# =============
+# Reward vector
+# =============
+#
+# All rewards are -1 (penalty for taking another shot) except for the target
+# which has the only positive reward, incentivizing the MDP solving algorithm
+# to find quick paths to reach the target.
 R = np.array([-1 for _ in range(num_states)])
 target_xi, target_yi = to_bin_index(*map["target"])
 ti = S_index[(target_xi, target_yi, "green")]
 R[ti] = 1
 
+# ===========
+# Train model
+# ===========
+#
 print("Training model...")
-mdp = mdptoolbox.mdp.PolicyIteration(T, R, 0.99)
+mdp = mdptoolbox.mdp.PolicyIteration(T, R, 0.89, max_iter=20)
 mdp.setVerbose()
 mdp.run()
 print("Converged in", mdp.time)
 
+# ================
 # Visualize values
 # ================
 #
 v_hist = np.zeros((total_y_bins, total_x_bins))
+sorted_values = sorted(mdp.V[:-1])
+vmin = sorted_values[1]
+vmax = sorted_values[-1]
 for i, value in enumerate(mdp.V[:-1]):
     yi, xi, terrain = S[i]
     if terrain == "green":
@@ -486,64 +516,73 @@ for i, value in enumerate(mdp.V[:-1]):
     elif terrain == "sand" and percent_sand[yi][xi] > 0.9:
         v_hist[yi][xi] = value
 reset_figure()
-overlay_tiles(v_hist, vmin=90, vmax=100)
+overlay_tiles(v_hist, vmin=vmin, vmax=vmax)
+plt.title(f"Values: {map_file}, skill {skill}")
 plt.savefig("value.png", dpi=400)
 
-reset_figure()
+# ================
 # Visualize policy
+# ================
+#
+reset_figure()
 for i, policy in enumerate(mdp.policy[:-1]):
     yi, xi, terrain = S[i]
-    if terrain == "green":
-        distance, angle = A[policy]
-        dx, dy = to_cartesian(distance, angle)
-        start_x = x_bins[xi] + 0.5 * x_tick
-        start_y = y_bins[yi] + 0.5 * y_tick
-        plt.arrow(
-            start_x,
-            start_y,
-            dx,
-            dy,
-            color="black" if terrain == "green" else "red",
-            alpha=0.2,
-            linewidth=1,
-            head_width=8,
-            head_length=8,
-            length_includes_head=True,
-        )
+    distance, angle = A[policy]
+    dx, dy = to_cartesian(distance, angle)
+    start_x = x_bins[xi] + 0.5 * x_tick
+    start_y = y_bins[yi] + 0.5 * y_tick
+    plt.arrow(
+        start_x,
+        start_y,
+        dx,
+        dy,
+        color="black" if terrain == "green" else "red",
+        alpha=0.2,
+        linewidth=1,
+        head_width=8,
+        head_length=8,
+        length_includes_head=True,
+    )
+plt.title(f"Policy: {map_file}, skill {skill}")
 plt.savefig("policy.png", dpi=400)
 
+# ===================
 # Visualize all shots
 # ===================
 #
 # Convert into an animation with
-# convert -delay 0 -loop 0 shots/*.png -quality 95 shots.mp4
+# `convert -delay 0 -loop 0 shots/*.png -quality 95 shots.mp4`
 #
 # makedirs("shots", exist_ok=True)
-# test_xi = 5
-# test_yi = 13
+# test_xi = 3
+# test_yi = 14
+# test_terrain = "green"
 
 # for ai, action in enumerate(A):
 #     print("Rendering", ai + 1, "out of", len(A))
-#     plt.clf()
 
-#     plt.gca().set_xlim([-10, 800])
-#     plt.gca().set_ylim([0, 600])
+#     reset_figure()
+#     plt.gca().set_xlim([min_x, max_x])
+#     plt.gca().set_ylim([min_y, max_y])
 #     plt.gca().invert_yaxis()
 
 #     draw_map()
 #     draw_bins()
 
-#     state_bin = test_yi * (total_x_bins) + test_xi
-#     transitions = np.split(T[ai][state_bin], total_y_bins)
-#     X, Y = np.meshgrid(x_bins, y_bins)
-#     plt.pcolormesh(X, Y, transitions, alpha=0.8)
+#     state_bin = S_index[(test_xi, test_yi, test_terrain)]
+#     transitions = T[ai][state_bin][:-1]
+#     transition_probs = np.zeros((total_y_bins, total_x_bins))
+#     for si, prob in enumerate(transitions):
+#         xi, yi, terrain = S[si]
+#         transition_probs[yi][xi] = prob
+#     overlay_tiles(transition_probs, vmin=0, vmax=1)
 
 #     start_x = x_bins[test_xi] + 0.5 * x_tick
 #     start_y = y_bins[test_yi] + 0.5 * y_tick
 
 #     # Plot policy vector
-#     policy = policy_hist[test_yi][test_xi]
-#     distance, angle = A[policy_hist[test_yi][test_xi]]
+#     policy = mdp.policy[state_bin]
+#     distance, angle = A[policy]
 #     dx, dy = to_cartesian(distance, angle)
 #     plt.arrow(
 #         start_x,
