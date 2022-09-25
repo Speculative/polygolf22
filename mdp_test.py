@@ -15,59 +15,9 @@ from os.path import exists
 from os import makedirs
 import mdptoolbox
 import multiprocessing
+import pdb
 
 
-def to_cartesian(r, theta):
-    return r * np.cos(theta), r * np.sin(theta)
-
-
-# distance/angle space -> x/y space?
-def sample_shots(
-    x_bins,
-    y_bins,
-    start_x,
-    start_y,
-    skill,
-    distance,
-    angle,
-    in_sand,
-    num_samples=100,
-):
-    distance_dev = distance / skill
-    angle_dev = 1 / (2 * skill)
-
-    if in_sand:
-        distance_dev *= 2
-        angle_dev *= 2
-
-    # dist = multivariate_normal(
-    #     mean=[distance, angle], cov=[distance_dev**2, angle_dev**2]
-    # )
-    # samples = dist.rvs(size=num_samples)
-    # ds = [t[0] for t in samples]
-    # angles = [t[1] for t in samples]
-    dist_rv = norm(loc=distance, scale=distance_dev)
-    angle_rv = norm(loc=angle, scale=angle_dev)
-    ds = dist_rv.rvs(size=num_samples)
-    angles = angle_rv.rvs(size=num_samples)
-    xs, ys = to_cartesian(ds, angles)
-    xs += start_x
-    ys += start_y
-
-    H, _, _ = np.histogram2d(
-        xs,
-        ys,
-        # Transform edge bins to inf to capture everything falling off the map
-        [
-            np.concatenate([[-np.inf], x_bins[1:], [np.inf]]),
-            np.concatenate([[-np.inf], y_bins[1:], [np.inf]]),
-        ],
-    )
-    return H
-
-
-plt.clf()
-plt.gca().invert_yaxis()
 map_file = "maps/default/simple_with_sandtraps.json"
 with open(map_file) as f:
     map = json.loads(f.read())
@@ -101,13 +51,97 @@ print(f"Bin boundaries: x {min_x}, {max_x} y {min_y} {max_y}")
 width = max_x - min_x
 height = max_y - min_y
 
-plt.gca().set_aspect(width / height)
-
-
 x_bins = np.linspace(min_x, max_x, x_quant + 2, endpoint=False)
 y_bins = np.linspace(min_y, max_y, y_quant + 2, endpoint=False)
 total_x_bins = len(x_bins)
 total_y_bins = len(y_bins)
+print("bins:", total_x_bins, total_y_bins)
+
+green_poly = ShapelyPolygon(map["map"])
+sand_polys = [ShapelyPolygon(coords) for coords in map["sand traps"]]
+
+skill = 10
+distance_levels = np.linspace(1, 200 + skill, dist_quant)
+angle_levels = np.linspace(0, 2 * np.pi, angle_quant)
+
+cell_polys = [
+    [
+        ShapelyPolygon(
+            [
+                (x_bin, y_bin),
+                (x_bin + x_tick, y_bin),
+                (x_bin + x_tick, y_bin + y_tick),
+                (x_bin, y_bin + y_tick),
+                (x_bin, y_bin),
+            ]
+        )
+        for x_bin in x_bins
+    ]
+    for y_bin in y_bins
+]
+
+is_land = [[green_poly.contains(cell_poly) for cell_poly in row] for row in cell_polys]
+has_land = [
+    [green_poly.intersects(cell_poly) for cell_poly in row] for row in cell_polys
+]
+percent_land = [
+    [
+        min(green_poly.intersection(cell_poly).area / cell_poly.area, 1)
+        for cell_poly in row
+    ]
+    for row in cell_polys
+]
+has_sand = [
+    [
+        any(cell_poly.intersects(sand_poly) for sand_poly in sand_polys)
+        for cell_poly in row
+    ]
+    for row in cell_polys
+]
+percent_sand = [
+    [
+        min(
+            sum(sand_poly.intersection(cell_poly).area for sand_poly in sand_polys)
+            / cell_poly.area,
+            1,
+        )
+        for cell_poly in row
+    ]
+    for row in cell_polys
+]
+
+
+def to_bin_index(x, y):
+    # xi = int((x - min_x) / (x_tick))
+    # yi = int((y - min_y) / (y_tick))
+    xi = next(xi for xi, x_bin in enumerate(x_bins) if x_bin > x) - 1
+    yi = next(yi for yi, y_bin in enumerate(y_bins) if y_bin > y) - 1
+    return xi, yi
+
+
+landy_bins = list(
+    (yi, xi)
+    for yi, xi in product(range(total_y_bins), range(total_x_bins))
+    if has_land[yi][xi]
+)
+S = list(
+    (yi, xi, terrain)
+    for ((yi, xi), terrain) in product(landy_bins, ["green", "sand"])
+    if (
+        (terrain == "green" and percent_sand[yi][xi] < 1)
+        or (terrain == "sand" and percent_sand[yi][xi] > 0)
+    )
+)
+# Dead state for invalid moves
+S.append((None, None, None))
+# (xi, yi) -> index in S
+S_index = {(xi, yi, terrain): index for index, (yi, xi, terrain) in enumerate(S)}
+A = list(product(distance_levels, angle_levels))
+num_states = len(S)
+num_actions = len(A)
+print("states:", num_states)
+print("actions:", num_actions)
+
 
 # Profiling how long generating T takes
 # =====================================
@@ -144,9 +178,6 @@ def draw_bins():
 
 print(f"x range: [{x_bins[0]}, {x_bins[-1]}], y range:[{y_bins[0]}, {y_bins[-1]}]")
 
-green_poly = ShapelyPolygon(map["map"])
-sand_polys = [ShapelyPolygon(coords) for coords in map["sand traps"]]
-
 
 def draw_map():
     plt.fill(
@@ -167,52 +198,75 @@ def draw_map():
             )
 
 
-cell_polys = [
-    [
-        ShapelyPolygon(
-            [
-                (min_x + xi * x_tick, min_y + yi * y_tick),
-                (min_x + (xi + 1) * x_tick, min_y + yi * y_tick),
-                (min_x + (xi + 1) * x_tick, min_y + (yi + 1) * y_tick),
-                (min_x + xi * x_tick, min_y + (yi + 1) * y_tick),
-                (min_x + xi * x_tick, min_y + yi * y_tick),
-            ]
-        )
-        for xi in range(total_x_bins)
-    ]
-    for yi in range(total_y_bins)
-]
+def reset_figure():
+    plt.clf()
+    plt.gca().invert_yaxis()
+    # plt.gca().set_aspect(width / height)
+    draw_bins()
+    draw_map()
 
-is_land = [[green_poly.contains(cell_poly) for cell_poly in row] for row in cell_polys]
-is_sand = [
-    [
-        any(cell_poly.intersects(sand_poly) for sand_poly in sand_polys)
-        for cell_poly in row
-    ]
-    for row in cell_polys
-]
+
+def overlay_tiles(tiles, vmin=None, vmax=None):
+    X, Y = np.meshgrid(x_bins + 0.5 * x_tick, y_bins + 0.5 * y_tick)
+    plt.pcolormesh(X, Y, tiles, alpha=0.5, vmin=vmin, vmax=vmax)
+
 
 # visualize land
 # ==============
 #
-# X, Y = np.meshgrid(x_bins, y_bins)
-# plt.pcolormesh(
-#     X,
-#     Y,
-#     is_land,
-#     alpha=0.5,
-# )
+reset_figure()
+overlay_tiles(percent_land)
+plt.savefig("map.png")
 
 
-def to_bin(x, y):
-    xi = int((x - min_x) / (x_tick))
-    yi = int((y - min_y) / (y_tick))
-    return xi, yi
+def to_cartesian(r, theta):
+    return r * np.cos(theta), r * np.sin(theta)
+
+
+# distance/angle space -> x/y space?
+def sample_shots(
+    x_bins,
+    y_bins,
+    start_x,
+    start_y,
+    skill,
+    distance,
+    angle,
+    in_sand,
+    num_samples=100,
+):
+    distance_dev = distance / skill
+    angle_dev = 1 / (2 * skill)
+
+    if in_sand:
+        distance_dev *= 2
+        angle_dev *= 2
+
+    dist_rv = norm(loc=distance, scale=distance_dev)
+    angle_rv = norm(loc=angle, scale=angle_dev)
+    ds = dist_rv.rvs(size=num_samples)
+    # Naive rolling distance
+    ds *= 1.1
+    angles = angle_rv.rvs(size=num_samples)
+    xs, ys = to_cartesian(ds, angles)
+    xs += start_x
+    ys += start_y
+
+    H, _, _ = np.histogram2d(
+        xs,
+        ys,
+        # Transform edge bins to inf to capture everything falling off the map
+        [
+            np.concatenate([[-np.inf], x_bins[1:], [np.inf]]),
+            np.concatenate([[-np.inf], y_bins[1:], [np.inf]]),
+        ],
+    )
+    return H
+
 
 def joint_density(location, start, angle, distance, skill, in_sand):
-    rot = np.array([[np.cos(angle), np.sin(angle)], 
-                    [-np.sin(angle), np.cos(angle)]])
-    rotated_location = np.matmul(rot, location[:,:,:,np.newaxis])
+    rot = np.array([[np.cos(angle), np.sin(angle)], [-np.sin(angle), np.cos(angle)]])
+    rotated_location = np.matmul(rot, location[:, :, :, np.newaxis])
     rotated_location = rotated_location.squeeze(-1)
     translated_location = rotated_location - start
 
@@ -222,107 +276,115 @@ def joint_density(location, start, angle, distance, skill, in_sand):
     if in_sand:
         angle_std *= 2
         dist_std *= 2
-    
+
     rho = np.linalg.norm(translated_location, axis=2)
-    phi = np.arctan2(translated_location[:,:,1], translated_location[:,:,0])
-    
+    phi = np.arctan2(translated_location[:, :, 1], translated_location[:, :, 0])
+
     jacobian = distance
-    return norm.pdf(rho, loc=distance, scale=dist_std) * norm.pdf(phi, loc=0, scale=angle_std) / jacobian
+    return (
+        norm.pdf(rho, loc=distance, scale=dist_std)
+        * norm.pdf(phi, loc=0, scale=angle_std)
+        / jacobian
+    )
+
 
 def transition_histogram_no_sample(start_x, start_y, skill, distance, angle, is_sand):
     transition = np.zeros((total_y_bins, total_x_bins))
     start = np.array([start_x, start_y])
     for xi in range(total_x_bins):
         for yi in range(total_y_bins):
-            transition[yi, xi] = dblquad(lambda x, y: joint_density(np.array([[[x, y]]]), start, angle, distance, skill, is_sand), 
-                                         y_bins[yi], y_bins[yi] + y_tick, 
-                                         lambda _: x_bins[xi], lambda _: x_bins[xi] + x_tick)[0]
+            transition[yi, xi] = dblquad(
+                lambda x, y: joint_density(
+                    np.array([[[x, y]]]), start, angle, distance, skill, is_sand
+                ),
+                y_bins[yi],
+                y_bins[yi] + y_tick,
+                lambda _: x_bins[xi],
+                lambda _: x_bins[xi] + x_tick,
+            )[0]
     return transition
 
-def transition_histogram(start_x, start_y, skill, distance, angle, is_sand):
+
+def transition_histogram(start_xi, start_yi, skill, distance, angle, is_sand):
+    start_x = x_bins[start_xi] + 0.5 * x_tick
+    start_y = y_bins[start_yi] + 0.5 * y_tick
     H = sample_shots(x_bins, y_bins, start_x, start_y, skill, distance, angle, is_sand)
+    H = H.T
 
-    transition = H.T
-    start_xi, start_yi = to_bin(start_x, start_y)
+    transition = np.zeros(num_states)
 
-    # print("start:", start_x, start_y, start_xi, start_yi)
     return_shots = 0
     for xi in range(total_x_bins):
         for yi in range(total_y_bins):
-            if np.isnan(transition[yi][xi]):
-                transition[yi][xi] = 0
-            if not is_land[yi][xi]:
-                # print(start_yi, start_xi, yi, xi)
-                return_shots += transition[yi][xi]
-                transition[yi][xi] = 0
+            samples_in_bin = H.T[yi][xi]
+            p_land = percent_land[yi][xi]
+            p_sand = percent_sand[yi][xi]
 
-    transition[start_yi][start_xi] += return_shots
+            grounded_samples = p_land * samples_in_bin
+            drowned_samples = (1 - p_land) * samples_in_bin
+            return_shots += drowned_samples
 
-    # normalize transition probabilities
-    # if np.sum(transition) == 0:
-    #     print(np.sum(H), start_x, start_y, distance, angle)
+            sandy_samples = p_sand * grounded_samples
+            green_samples = (1 - p_sand) * grounded_samples
+            sand_state = (xi, yi, "sand")
+            green_state = (xi, yi, "green")
+            if sand_state in S_index:
+                transition[S_index[sand_state]] += sandy_samples
+            elif sandy_samples > 0:
+                print("Lost some sand samples", xi, yi, sandy_samples)
+
+            if green_state in S_index:
+                transition[S_index[green_state]] += green_samples
+            elif green_samples > 0:
+                print("Lost some green samples", xi, yi, green_samples)
+
+    # Allocate returned shots to the start state
+    start_key = (start_xi, start_yi, "sand" if is_sand else "green")
+    if not start_key in S_index:
+        print("Mismatch between states and index?")
+        pdb.set_trace()
+    start_i = S_index[start_key]
+    transition[start_i] += return_shots
+
+    if np.abs(np.sum(H) - np.sum(transition)) > 0.001:
+        print(
+            f"Mis-allocated samples from {start_x},{start_y}: had {np.sum(H)}, finished with {np.sum(transition)}."
+        )
+
+    # Normalize to get probabilities
     transition = transition / max(np.sum(transition), 1)
-
-    if np.sum(transition) == 0:
-        print(np.sum(H), start_x, start_y, distance, angle)
 
     return transition
 
 
-skill = 10
-distance_levels = np.linspace(1, 200 + skill, dist_quant)
-angle_levels = np.linspace(0, 2 * np.pi, angle_quant)
-
-S = list(product(y_bins, x_bins))
-A = list(product(distance_levels, angle_levels))
-num_states = len(S)
-num_actions = len(A)
-print("states:", num_states)
-print("actions:", num_actions)
-
-
-def point_is_land(x, y):
-    xi, yi = to_bin(x, y)
-    return is_land[yi][xi]
-
-
-def point_is_sand(x, y):
-    xi, yi = to_bin(x, y)
-    return is_sand[yi][xi]
-
-
-unreachable_transition = np.array(
-    [0 for _ in range(total_x_bins) for _ in range(total_y_bins)]
-)
-unreachable_transition[0] = 1
+# TODO: This no longer refers to a water tile.
+# Need a new tile for this to point to.
+unreachable_transition = np.array([0 for _ in range(num_states)])
+unreachable_transition[-1] = 1
 
 
 def transition_for_action_at_state(action, state):
     distance, angle = action
-    y, x = state
-    if not point_is_land(x, y):
-        # print("Point is not on land")
+    yi, xi, terrain = state
+    # This should be a no-op since there should be no non-land states
+    if (
+        # Not a no-op because we need a dead state
+        state == (None, None, None)
+        # No-ops, can probably be deleted
+        or not has_land[yi][xi]
+        or (terrain == "green" and percent_sand[yi][xi] == 1)
+        or (terrain == "sand" and percent_sand[yi][xi] == 0)
+    ):
         return unreachable_transition
 
-    cx = x + 0.5 * x_tick
-    cy = y + 0.5 * y_tick
-
-    sand = point_is_sand(cx, cy)
-    if not sand or distance <= (200 + skill) / 2:
-        return transition_histogram(cx, cy, skill, distance, angle, sand).flatten()
+    if terrain == "green":
+        return transition_histogram(xi, yi, skill, distance, angle, False).flatten()
+    elif distance <= (200 + skill) / 2:
+        return transition_histogram(xi, yi, skill, distance, angle, True).flatten()
     else:
-        # print("In sand and distance is too long")
         # In sand, max distance is halved, so treat these actions as invalid
         return unreachable_transition
 
-
-# Profiling how long generating T takes
-# =====================================
-#
-# print(
-#     "Time to generate all histograms for 1 action:",
-#     timeit(gen_action_transitions, number=1),
-# )
 
 # "off", "pickle", "mmap"
 T_cache = "pickle"
@@ -332,6 +394,15 @@ mmap_cache_file = "T.npy"
 
 def gen_action_transitions(action):
     return [transition_for_action_at_state(action, state) for state in S]
+
+
+# Profiling how long generating T takes
+# =====================================
+#
+# print(
+#     "Time to generate all histograms for 1 action:",
+#     timeit(lambda: gen_action_transitions((50, 0)), number=1),
+# )
 
 
 def mmap_gen_action_transitions(work):
@@ -349,6 +420,7 @@ def gen_T_parallel():
     t_start = perf_counter()
     pool = multiprocessing.Pool(multiprocessing.cpu_count())
     T = np.array(pool.map(gen_action_transitions, A))
+    # T = np.array([gen_action_transitions(action) for action in A])
     t_end = perf_counter()
     print("T generated in", t_end - t_start, "seconds")
     return T
@@ -392,11 +464,10 @@ else:
         "mmap",
     ], "T_cache must be one of: off, pickle, mmap"
 
-R = np.array([-1 for _ in range(total_x_bins) for _ in range(total_y_bins)])
-target_x, target_y = to_bin(*map["target"])
-R[target_y * (total_x_bins) + target_x] = 1
-
-plt.plot(x_bins[target_x], y_bins[target_y], "c.")
+R = np.array([-1 for _ in range(num_states)])
+target_xi, target_yi = to_bin_index(*map["target"])
+ti = S_index[(target_xi, target_yi, "green")]
+R[ti] = 1
 
 print("Training model...")
 mdp = mdptoolbox.mdp.PolicyIteration(T, R, 0.99)
@@ -407,40 +478,38 @@ print("Converged in", mdp.time)
 # Visualize values
 # ================
 #
-draw_map()
-draw_bins()
-
-v_hist = np.split(np.array(mdp.V), total_y_bins)
-X, Y = np.meshgrid(x_bins, y_bins)
-plt.pcolormesh(X, Y, v_hist, alpha=0.8, vmin=90, vmax=100)
-
+v_hist = np.zeros((total_y_bins, total_x_bins))
+for i, value in enumerate(mdp.V[:-1]):
+    yi, xi, terrain = S[i]
+    if terrain == "green":
+        v_hist[yi][xi] = value
+    elif terrain == "sand" and percent_sand[yi][xi] > 0.9:
+        v_hist[yi][xi] = value
+reset_figure()
+overlay_tiles(v_hist, vmin=90, vmax=100)
 plt.savefig("value.png", dpi=400)
 
-plt.clf()
-plt.gca().invert_yaxis()
-draw_map()
-draw_bins()
+reset_figure()
 # Visualize policy
-policy_hist = np.split(np.array(mdp.policy), total_y_bins)
-for yi in range(total_y_bins):
-    for xi in range(total_x_bins):
-        policy = policy_hist[yi][xi]
-        if is_land[yi][xi]:
-            distance, angle = A[policy_hist[yi][xi]]
-            dx, dy = to_cartesian(distance, angle)
-            start_x = x_bins[xi] + 0.5 * x_tick
-            start_y = y_bins[yi] + 0.5 * y_tick
-            plt.arrow(
-                start_x,
-                start_y,
-                dx,
-                dy,
-                alpha=0.2,
-                linewidth=1,
-                head_width=8,
-                head_length=8,
-                length_includes_head=True,
-            )
+for i, policy in enumerate(mdp.policy[:-1]):
+    yi, xi, terrain = S[i]
+    if terrain == "green":
+        distance, angle = A[policy]
+        dx, dy = to_cartesian(distance, angle)
+        start_x = x_bins[xi] + 0.5 * x_tick
+        start_y = y_bins[yi] + 0.5 * y_tick
+        plt.arrow(
+            start_x,
+            start_y,
+            dx,
+            dy,
+            color="black" if terrain == "green" else "red",
+            alpha=0.2,
+            linewidth=1,
+            head_width=8,
+            head_length=8,
+            length_includes_head=True,
+        )
 plt.savefig("policy.png", dpi=400)
 
 # Visualize all shots
