@@ -9,6 +9,75 @@ from os import makedirs
 from statistics import mean
 import pdb
 
+PRIVATE_RESULTS = {
+    "n.json": {
+        10: [10, 10, 10, 10, 9],
+        25: [10, 7, 9, 9, 10],
+        50: [8, 8, 7, 9, 7],
+        100: [5, 6, 5, 5, 5],
+    },
+    "chevuoi.json": {
+        10: [7, 8, 10, 10, 7],
+        25: [7, 6, 7, 6, 6],
+        50: [7, 7, 7, 6, 7],
+        100: [6, 5, 5, 5, 5],
+    },
+    "g1/tournament.json": {
+        10: [9, 10, 10, 10, 10],
+        25: [6, 9, 10, 10, 8],
+        50: [7, 6, 7, 6, 7],
+        100: [3, 4, 4, 4, 4],
+    },
+    "g3_tournament.json": {
+        10: [10, 10, 7, 10, 9],
+        25: [7, 9, 7, 6, 6],
+        50: [7, 7, 10, 7, 6],
+        100: [10, 10, 10, 10, 10],
+    },
+    "g7_final.json": {
+        10: [10, 10, 10, 10, 10],
+        25: [10, 10, 10, 10, 10],
+        50: [10, 10, 10, 10, 10],
+        100: [9, 10, 9, 7, 9],
+    },
+    "checkers2.json": {
+        10: [8, 10, 10, 10, 9],
+        25: [6, 10, 6, 8, 9],
+        50: [9, 7, 10, 10, 7],
+        100: [10, 10, 10, 10, 10],
+    },
+    "mwc_swirly.json": {
+        10: [10, 10, 10, 10, 10],
+        25: [7, 10, 7, 10, 10],
+        50: [10, 6, 5, 5, 5],
+        100: [7, 6, 6, 6, 6],
+    },
+    "baseball.json": {
+        10: [10, 10, 10, 10, 10],
+        25: [10, 10, 10, 10, 10],
+        50: [10, 10, 10, 10, 10],
+        100: [10, 10, 10, 10, 10],
+    },
+    "tourney.json": {
+        10: [10, 10, 10, 10, 10],
+        25: [10, 10, 10, 10, 10],
+        50: [10, 10, 10, 10, 10],
+        100: [10, 10, 10, 10, 10],
+    },
+    "risk_map.json": {
+        10: [10, 10, 10, 10, 10],
+        25: [10, 10, 10, 10, 10],
+        50: [10, 9, 10, 10, 10],
+        100: [8, 8, 10, 10, 10],
+    },
+    "g2/tournament.json": {
+        10: [10, 9, 9, 10, 10],
+        25: [10, 10, 8, 8, 10],
+        50: [7, 7, 7, 7, 6],
+        100: [4, 4, 4, 4, 4],
+    },
+}
+
 STRINGIFIED_KEYS = [
     "player_names",
     "skills",
@@ -128,6 +197,7 @@ for map, map_logs in logs.items():
 makedirs("plots", exist_ok=True)
 for map, map_logs in logs.items():
     plt.clf()
+    plt.tight_layout()
     # Due to missing data, not all groups are always present
     groups = set()
     for skill_logs in map_logs.values():
@@ -136,22 +206,40 @@ for map, map_logs in logs.items():
 
     skill_levels = list(map_logs.keys())
     for group in groups:
-        scores = []
-        for skill_level in skill_levels:
-            if group in map_logs[skill_level]:
-                scores.append([log["scores"] for log in map_logs[skill_level][group]])
-            else:
-                scores.append(None)
-        ys = [
-            mean(skill_scores) if skill_scores is not None else None
-            for skill_scores in scores
-        ]
+        map_key = None
+        for key in PRIVATE_RESULTS:
+            if key in map:
+                map_key = key
+                break
+        if group == 5 and map_key is not None:
+            ys = list(mean(scores) for scores in PRIVATE_RESULTS[map_key].values())
+        else:
+            scores = []
+            for skill_level in skill_levels:
+                if group in map_logs[skill_level]:
+                    scores.append(
+                        [log["scores"] for log in map_logs[skill_level][group]]
+                    )
+                else:
+                    scores.append(None)
+            ys = [
+                mean(skill_scores) if skill_scores is not None else None
+                for skill_scores in scores
+            ]
         if group == 5:
             print(map, ys)
-        plt.plot(skill_levels, ys)
+        plt.plot(skill_levels, ys, linewidth=(4 if group == 5 else 1))
         # for i, point in list(enumerate(ys))[::-1]:
         #     if point is not None:
         #         plt.text(skill_levels[-1], ys[i], f"Group {group}")
         #         break
-    plt.gca().legend([f"Group {group}" for group in groups])
-    plt.savefig(f"plots/{os.path.basename(map)}.png")
+    lgd = plt.gca().legend(
+        [f"Group {group}" for group in groups],
+        loc="center left",
+        bbox_to_anchor=(1, 0.5),
+    )
+    plt.savefig(
+        f"plots/{map.replace('/', '_')}.png",
+        bbox_extra_artists=(lgd,),
+        bbox_inches="tight",
+    )
