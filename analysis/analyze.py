@@ -3,8 +3,11 @@ import csv
 from pprint import pprint
 from glob import glob
 import re
-import json
 from typing import Any
+import os.path
+from os import makedirs
+from statistics import mean
+import pdb
 
 STRINGIFIED_KEYS = [
     "player_names",
@@ -121,3 +124,34 @@ for map, map_logs in logs.items():
         print(
             f"{map}, skill {skill}: {sum(len(group_logs) for group_logs in skill_logs.values())} logs"
         )
+
+makedirs("plots", exist_ok=True)
+for map, map_logs in logs.items():
+    plt.clf()
+    # Due to missing data, not all groups are always present
+    groups = set()
+    for skill_logs in map_logs.values():
+        groups.update(skill_logs.keys())
+    groups = list(groups)
+
+    skill_levels = list(map_logs.keys())
+    for group in groups:
+        scores = []
+        for skill_level in skill_levels:
+            if group in map_logs[skill_level]:
+                scores.append([log["scores"] for log in map_logs[skill_level][group]])
+            else:
+                scores.append(None)
+        ys = [
+            mean(skill_scores) if skill_scores is not None else None
+            for skill_scores in scores
+        ]
+        if group == 5:
+            print(map, ys)
+        plt.plot(skill_levels, ys)
+        # for i, point in list(enumerate(ys))[::-1]:
+        #     if point is not None:
+        #         plt.text(skill_levels[-1], ys[i], f"Group {group}")
+        #         break
+    plt.gca().legend([f"Group {group}" for group in groups])
+    plt.savefig(f"plots/{os.path.basename(map)}.png")
